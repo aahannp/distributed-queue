@@ -39,19 +39,22 @@ type JobManager struct {
 	timers map[int]*time.Timer
 	closed bool
 	// how many attempts have been made to retry a job // jobid-> no of retries
-	attempts   map[int]int
-	deadletter []int
+	attempts    map[int]int
+	deadletter  []int
+	stopChannel chan struct{}
+	outStanding int
 }
 
 func NewJobManager(size int) *JobManager {
 	return &JobManager{
-		ch:       make(chan Job, size),
-		status:   make(map[int]string),
-		js:       make(map[int]JobState),
-		jobs:     make(map[int]Job),
-		timers:   make(map[int]*time.Timer),
-		closed:   false,
-		attempts: make(map[int]int),
+		ch:          make(chan Job, size),
+		status:      make(map[int]string),
+		js:          make(map[int]JobState),
+		jobs:        make(map[int]Job),
+		timers:      make(map[int]*time.Timer),
+		closed:      false,
+		attempts:    make(map[int]int),
+		stopChannel: make(chan struct{}),
 	}
 }
 
@@ -134,13 +137,15 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 					res := execute(DoWork, job, jobCtx, i, jm)
 					jobCancel()
 					switch {
-					case res.Err == nil:
-					case errors.Is(res.Err, ErrInvalidJob):
-					case errors.Is(res.Err, ErrServerBusy):
-						jm.requeueJob(job, "server busy")
-					case errors.Is(res.Err, ErrJobPanic):
-					case errors.Is(res.Err, context.DeadlineExceeded):
-						jm.requeueJob(job, "timed out")
+					case res.Err == nil, errors.Is(res.Err, ErrInvalidJob), errors.Is(res.Err, ErrJobPanic):
+						jm.finishLocked() // final
+
+					case errors.Is(res.Err, ErrServerBusy), errors.Is(res.Err, context.DeadlineExceeded):
+						ok = jm.requeueJob(job, "server busy")
+						if !ok {
+							jm.finishLocked()
+						}
+
 					default:
 						jm.requeueJob(job, "failed")
 					}
@@ -148,6 +153,7 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 				case <-ctx.Done():
 					s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
 					fmt.Println(s)
+
 					return
 
 				}
@@ -240,9 +246,17 @@ func (jm *JobManager) SubmitJob(job Job) {
 func (jm *JobManager) Wait() {
 	jm.wg.Wait()
 }
-
+func (jm *JobManager) finishLocked() {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	jm.outStanding--
+	// when all the workers are done
+	if jm.outStanding == 0 {
+		close(jm.stopChannel)
+	}
+}
 func main() {
-
+	st := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	jobs := []Job{
@@ -255,12 +269,16 @@ func main() {
 	jm := NewJobManager(2)
 
 	jm.Start(ctx, 5)
+	jm.mu.Lock()
+	jm.outStanding = len(jobs)
+	jm.mu.Unlock()
 
 	for _, job := range jobs {
 		jm.SubmitJob(job)
 	}
-
-	time.Sleep(2 * time.Second)
+	<-jm.stopChannel
+	end := time.Now()
+	fmt.Println(end.Sub(st))
 	jm.Close()
 	jm.Wait()
 	for key, val := range jm.status {
