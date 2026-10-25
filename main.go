@@ -77,16 +77,33 @@ func (jm *JobManager) Close() {
 	close(jm.ch)
 }
 func (jm *JobManager) requeueJob(job Job, reason string) bool {
+
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	if jm.closed {
-		fmt.Printf("job %d %s, but queue is closed: not requeued\n", job.id, reason)
+
+	indeadletter := false
+	for _, tjob := range jm.deadletter {
+		if tjob == job.id {
+			indeadletter = true
+			break
+		}
+	}
+
+	if indeadletter {
+		fmt.Printf("This job was in deadletter no requeue for this job %v \n", job.id)
 		return false
 	}
+
+	// check if the job is already in deadletter we wont be requeueing it
 	if jm.attempts[job.id] >= maxRetry {
 		jm.js[job.id] = StateError
 		jm.deadletter = append(jm.deadletter, job.id)
 		fmt.Printf("job %d %s, max retries (%d) reached: dead-lettered\n", job.id, reason, maxRetry)
+		return false
+	}
+
+	if jm.closed {
+		fmt.Printf("job %d %s, but queue is closed: not requeued\n", job.id, reason)
 		return false
 	}
 	select {
@@ -110,11 +127,12 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 				select {
 
 				case job, ok := <-jm.ch:
-					jobCtx, jobCancel := context.WithTimeout(ctx, MAX_TIME_PER_JOB)
-					defer jobCancel()
+
 					if !ok {
 						return
 					}
+					jobCtx, jobCancel := context.WithTimeout(ctx, MAX_TIME_PER_JOB)
+					defer jobCancel()
 					jm.mu.Lock()
 					jm.jobs[job.id] = job
 					// this timer function will restart all the jobs which got out of time.
@@ -124,7 +142,7 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 					myTimer := time.AfterFunc(MAX_TIME_PER_JOB, tfn)
 					jm.timers[job.id] = myTimer
 					jm.mu.Unlock()
-					res := execute(DoWork, job, jobCtx, i, jm.status, &jm.mu, jm.js)
+					res := execute(DoWork, job, jobCtx, i, jm)
 
 					if res.Err != nil {
 						fmt.Printf("job issue: %v and error %v \n", job.id, res.Err)
@@ -132,9 +150,6 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 
 					if res.Err != nil && !errors.Is(res.Err, ErrInvalidJob) && !errors.Is(res.Err, ErrJobPanic) {
 						// before we requeue we add exponential backoff here so that we dont try a lot in a short amount of time
-						base := 100 * time.Millisecond
-						delay := base << (jm.attempts[job.id])
-						time.Sleep(delay)
 						jm.requeueJob(job, "failed")
 					}
 					jm.mu.Lock()
@@ -158,7 +173,10 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 
 }
 
-func execute[T isJob](fn func(T, context.Context, int, map[int]string, *sync.Mutex) error, item T, ctx context.Context, workerId int, status map[int]string, mu *sync.Mutex, js map[int]JobState) (res Result) {
+func execute[T isJob](fn func(T, context.Context, int, map[int]string, *sync.Mutex) error, item T, ctx context.Context, workerId int, jm *JobManager) (res Result) {
+	mu := &jm.mu
+	js := jm.js
+	status := jm.status
 	defer func() {
 		if r := recover(); r != nil {
 			// what if we used different lock everytime and dont pass it as pointer would that make a difference?
@@ -251,14 +269,12 @@ func main() {
 	for _, job := range jobs {
 		jm.SubmitJob(job)
 	}
-	jm.Close()
+
 	time.Sleep(2 * time.Second)
+	jm.Close()
 	jm.Wait() // waiting for the recv to close here
 	for key, val := range jm.status {
 		fmt.Printf("job %v returned %v. \n", key, val)
-	}
-	for jobid, jobstatus := range jm.js {
-		fmt.Printf("job %v is %v \n", jobid, jobstatus)
 	}
 	fmt.Println("main is done everything is done thanks ")
 }
