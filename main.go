@@ -135,11 +135,16 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 					jobCancel()
 					switch {
 					case res.Err == nil:
-					case errors.Is(ErrInvalidJob, res.Err):
-					case errors.Is(ErrServerBusy, res.Err):
+					case errors.Is(res.Err, ErrInvalidJob):
+					case errors.Is(res.Err, ErrServerBusy):
 						jm.requeueJob(job, "server busy")
-					case errors.Is(ErrJobPanic, res.Err):
+					case errors.Is(res.Err, ErrJobPanic):
+					case errors.Is(res.Err, context.DeadlineExceeded):
+						jm.requeueJob(job, "timed out")
+					default:
+						jm.requeueJob(job, "failed")
 					}
+
 				case <-ctx.Done():
 					s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
 					fmt.Println(s)
@@ -158,7 +163,6 @@ func execute[T isJob](fn func(T, context.Context, int, map[int]string, *sync.Mut
 	status := jm.status
 	defer func() {
 		if r := recover(); r != nil {
-			// what if we used different lock everytime and dont pass it as pointer would that make a difference?
 			mu.Lock()
 			js[item.GetId()] = StateError
 			mu.Unlock()
@@ -204,6 +208,13 @@ func DoWork(job Job, ctx context.Context, workerId int, status map[int]string, m
 			mu.Unlock()
 			return nil
 		case <-ctx.Done(): // cancelled mid-job → stop now
+			reason := "cancelled"
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				reason = "timed out"
+			}
+			mu.Lock()
+			status[job.id] = reason
+			mu.Unlock()
 			return ctx.Err()
 		}
 	}
@@ -231,7 +242,7 @@ func (jm *JobManager) Wait() {
 }
 
 func main() {
-	// context is used to pass in the goroutines
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	jobs := []Job{
@@ -242,16 +253,16 @@ func main() {
 		{5, "hang"},
 	}
 	jm := NewJobManager(2)
-	// like a job reader
+
 	jm.Start(ctx, 5)
-	// like a job creater here -> this will create jobs for the reader
+
 	for _, job := range jobs {
 		jm.SubmitJob(job)
 	}
 
 	time.Sleep(2 * time.Second)
 	jm.Close()
-	jm.Wait() // waiting for the recv to close here
+	jm.Wait()
 	for key, val := range jm.status {
 		fmt.Printf("job %v returned %v. \n", key, val)
 	}
