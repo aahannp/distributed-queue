@@ -125,42 +125,21 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 			defer jm.wg.Done()
 			for {
 				select {
-
 				case job, ok := <-jm.ch:
 
 					if !ok {
 						return
 					}
 					jobCtx, jobCancel := context.WithTimeout(ctx, MAX_TIME_PER_JOB)
-					defer jobCancel()
-					jm.mu.Lock()
-					jm.jobs[job.id] = job
-					// this timer function will restart all the jobs which got out of time.
-					tfn := func() {
-						jm.requeueJob(job, "timed out")
-					}
-					myTimer := time.AfterFunc(MAX_TIME_PER_JOB, tfn)
-					jm.timers[job.id] = myTimer
-					jm.mu.Unlock()
 					res := execute(DoWork, job, jobCtx, i, jm)
-
-					if res.Err != nil {
-						fmt.Printf("job issue: %v and error %v \n", job.id, res.Err)
-					}
-
-					if res.Err != nil && !errors.Is(res.Err, ErrInvalidJob) && !errors.Is(res.Err, ErrJobPanic) {
-						// before we requeue we add exponential backoff here so that we dont try a lot in a short amount of time
-						jm.requeueJob(job, "failed")
-					}
-					jm.mu.Lock()
-					t, ok := jm.timers[job.id]
-					if ok && t == myTimer {
-						t.Stop()
-						delete(jm.timers, job.id)
-					}
-					jm.mu.Unlock()
 					jobCancel()
-
+					switch {
+					case res.Err == nil:
+					case errors.Is(ErrInvalidJob, res.Err):
+					case errors.Is(ErrServerBusy, res.Err):
+						jm.requeueJob(job, "server busy")
+					case errors.Is(ErrJobPanic, res.Err):
+					}
 				case <-ctx.Done():
 					s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
 					fmt.Println(s)
