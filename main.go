@@ -79,7 +79,21 @@ func (jm *JobManager) Close() {
 	jm.closed = true
 	close(jm.ch)
 }
+
+// this would run on the main goroutine ? and wil be called by some other goroutione? crazy?
 func (jm *JobManager) requeueJob(job Job, reason string) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	delay := time.Millisecond * 100 << (jm.attempts[job.id])
+	time.AfterFunc(delay, func() {
+		if !jm.requeueJobCore(job, reason) {
+			jm.finishLocked()
+		}
+	})
+	return true
+}
+
+func (jm *JobManager) requeueJobCore(job Job, reason string) bool {
 
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
