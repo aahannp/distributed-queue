@@ -11,6 +11,8 @@ import (
 // moved the constants etc in the new file called constants.go in the same package
 var ErrInvalidJob = errors.New("this job is invalid")
 var ErrServerBusy = errors.New("this server is busy")
+var ErrJobPanic = errors.New("Job panic")
+var MAX_TIME_PER_JOB = 500 * time.Millisecond
 
 type Job struct {
 	id      int
@@ -37,7 +39,7 @@ type JobManager struct {
 	timers map[int]*time.Timer
 	closed bool
 	// how many attempts have been made to retry a job // jobid-> no of retries
-	attempts map[int]int
+	attempts   map[int]int
 	deadletter []int
 }
 
@@ -74,10 +76,10 @@ func (jm *JobManager) Close() {
 	jm.closed = true
 	close(jm.ch)
 }
-func (jm * JobManager)requeueJob(job Job , reason string) bool {
+func (jm *JobManager) requeueJob(job Job, reason string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	if jm.closed{
+	if jm.closed {
 		fmt.Printf("job %d %s, but queue is closed: not requeued\n", job.id, reason)
 		return false
 	}
@@ -108,21 +110,32 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 				select {
 
 				case job, ok := <-jm.ch:
+					jobCtx, jobCancel := context.WithTimeout(ctx, MAX_TIME_PER_JOB)
+					defer jobCancel()
 					if !ok {
-						fmt.Println("worker channel closed")
 						return
 					}
 					jm.mu.Lock()
 					jm.jobs[job.id] = job
+					// this timer function will restart all the jobs which got out of time.
 					tfn := func() {
-						jm.requeueJob(job,"timed out")
+						jm.requeueJob(job, "timed out")
 					}
-					myTimer := time.AfterFunc(500*time.Millisecond, tfn)
+					myTimer := time.AfterFunc(MAX_TIME_PER_JOB, tfn)
 					jm.timers[job.id] = myTimer
 					jm.mu.Unlock()
-					res:= execute(DoWork, job, ctx, i, jm.status, &jm.mu, jm.js)
-					if res.Err!=nil && !errors.Is(res.Err, ErrInvalidJob){
-						jm.requeueJob(job, "failed")	
+					res := execute(DoWork, job, jobCtx, i, jm.status, &jm.mu, jm.js)
+
+					if res.Err != nil {
+						fmt.Printf("job issue: %v and error %v \n", job.id, res.Err)
+					}
+
+					if res.Err != nil && !errors.Is(res.Err, ErrInvalidJob) && !errors.Is(res.Err, ErrJobPanic) {
+						// before we requeue we add exponential backoff here so that we dont try a lot in a short amount of time
+						base := 100 * time.Millisecond
+						delay := base << (jm.attempts[job.id])
+						time.Sleep(delay)
+						jm.requeueJob(job, "failed")
 					}
 					jm.mu.Lock()
 					t, ok := jm.timers[job.id]
@@ -131,6 +144,7 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 						delete(jm.timers, job.id)
 					}
 					jm.mu.Unlock()
+					jobCancel()
 
 				case <-ctx.Done():
 					s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
@@ -151,7 +165,7 @@ func execute[T isJob](fn func(T, context.Context, int, map[int]string, *sync.Mut
 			mu.Lock()
 			js[item.GetId()] = StateError
 			mu.Unlock()
-			res = Result{fmt.Errorf("Job Panicked %v", r), item.GetId()}
+			res = Result{ErrJobPanic, item.GetId()}
 		}
 	}()
 	mu.Lock()
@@ -230,24 +244,15 @@ func main() {
 		{4, "busy"},
 		{5, "hang"},
 	}
-
-	startTime := time.Now()
 	jm := NewJobManager(2)
-
+	// like a job reader
 	jm.Start(ctx, 5)
-
+	// like a job creater here -> this will create jobs for the reader
 	for _, job := range jobs {
 		jm.SubmitJob(job)
 	}
-	// how do we singalise that all the jobs are done and we make sure the main sleeps for min of
-	// the time its taking to comeplete the jobs and 30 secs
-	time.Sleep(time.Second * 10)
-	cancel()
-	endTime := time.Now()
-	diff := endTime.Sub(startTime)
-
-	fmt.Println(diff)
 	jm.Close()
+	time.Sleep(2 * time.Second)
 	jm.Wait() // waiting for the recv to close here
 	for key, val := range jm.status {
 		fmt.Printf("job %v returned %v. \n", key, val)
