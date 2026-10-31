@@ -30,15 +30,11 @@ type isJob interface {
 }
 
 type JobManager struct {
-	ch     chan Job
-	wg     sync.WaitGroup
-	status map[int]string
-	mu     sync.Mutex
-	js     map[int]JobState
-	jobs   map[int]Job
-	timers map[int]*time.Timer
-	closed bool
-	// how many attempts have been made to retry a job // jobid-> no of retries
+	ch          chan Job
+	wg          sync.WaitGroup
+	mu          sync.Mutex
+	js          map[int]JobState
+	closed      bool
 	attempts    map[int]int
 	deadletter  []int
 	stopChannel chan struct{}
@@ -48,10 +44,7 @@ type JobManager struct {
 func NewJobManager(size int) *JobManager {
 	return &JobManager{
 		ch:          make(chan Job, size),
-		status:      make(map[int]string),
 		js:          make(map[int]JobState),
-		jobs:        make(map[int]Job),
-		timers:      make(map[int]*time.Timer),
 		closed:      false,
 		attempts:    make(map[int]int),
 		stopChannel: make(chan struct{}),
@@ -177,10 +170,9 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 
 }
 
-func execute[T isJob](fn func(T, context.Context, int, map[int]string, *sync.Mutex) error, item T, ctx context.Context, workerId int, jm *JobManager) (res Result) {
+func execute[T isJob](fn func(T, context.Context, int) error, item T, ctx context.Context, workerId int, jm *JobManager) (res Result) {
 	mu := &jm.mu
 	js := jm.js
-	status := jm.status
 	defer func() {
 		if r := recover(); r != nil {
 			mu.Lock()
@@ -192,7 +184,7 @@ func execute[T isJob](fn func(T, context.Context, int, map[int]string, *sync.Mut
 	mu.Lock()
 	js[item.GetId()] = StateInProgress
 	mu.Unlock()
-	err := fn(item, ctx, workerId, status, mu)
+	err := fn(item, ctx, workerId)
 	if err != nil {
 		mu.Lock()
 		js[item.GetId()] = StateError
@@ -206,48 +198,23 @@ func execute[T isJob](fn func(T, context.Context, int, map[int]string, *sync.Mut
 	return Result{err, item.GetId()}
 }
 
-func DoWork(job Job, ctx context.Context, workerId int, status map[int]string, mu *sync.Mutex) error {
+func DoWork(job Job, ctx context.Context, workerId int) error {
 	if job.payload == "boom" {
-		mu.Lock()
-		status[job.id] = "risky job"
-		mu.Unlock()
-		s := fmt.Sprintf("the job %v is risky", job.id)
-		panic(s)
+		panic(fmt.Sprintf("the job %v is risky", job.id))
 	}
 	if len(job.payload) > 10 {
-		mu.Lock()
-		status[job.id] = "invalid job"
-		mu.Unlock()
 		return ErrInvalidJob
 	}
+	wait := 200 * time.Millisecond
 	if job.payload == "hang" {
-		select {
-		case <-time.After(1000 * time.Millisecond): // pretend to work for 1s
-			mu.Lock()
-			status[job.id] = "ok"
-			mu.Unlock()
-			return nil
-		case <-ctx.Done(): // cancelled mid-job → stop now
-			reason := "cancelled"
-			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				reason = "timed out"
-			}
-			mu.Lock()
-			status[job.id] = reason
-			mu.Unlock()
-			return ctx.Err()
-		}
+		wait = 1000 * time.Millisecond
 	}
-	// now you can pretend working
 	select {
-	case <-time.After(200 * time.Millisecond): // pretend to work for 200ms
-		mu.Lock()
-		status[job.id] = "ok"
-		mu.Unlock()
-	case <-ctx.Done(): // cancelled mid-job → stop now
+	case <-time.After(wait):
+		return nil
+	case <-ctx.Done():
 		return ctx.Err()
 	}
-	return nil
 }
 
 func (jm *JobManager) SubmitJob(job Job) {
@@ -295,7 +262,7 @@ func main() {
 	fmt.Println(end.Sub(st))
 	jm.Close()
 	jm.Wait()
-	for key, val := range jm.status {
+	for key, val := range jm.js {
 		fmt.Printf("job %v returned %v. \n", key, val)
 	}
 	fmt.Println("main is done everything is done thanks ")
