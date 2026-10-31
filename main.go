@@ -127,6 +127,7 @@ func (jm *JobManager) requeueJobCore(job Job, reason string) bool {
 		rec.Attempts++
 		rec.State = StatePending
 		jm.records[job.Id] = rec
+		jm.persistLocked()
 		fmt.Printf("job %d %s, requeued (retry %d/%d)\n", job.Id, reason, rec.Attempts, maxRetry)
 		return true
 	default:
@@ -135,7 +136,7 @@ func (jm *JobManager) requeueJobCore(job Job, reason string) bool {
 	}
 
 }
-func saveAtomic(path string, recs map[int]Job) error {
+func saveAtomic(path string, recs map[int]JobRecord) error {
 	data, err := json.MarshalIndent(recs, "", "  ")
 	if err != nil {
 		return err
@@ -231,9 +232,11 @@ func DoWork(job Job, ctx context.Context, workerId int) error {
 	}
 }
 
+// record the job and put in the chan
 func (jm *JobManager) SubmitJob(job Job) {
 	jm.mu.Lock()
 	jm.records[job.Id] = JobRecord{ID: job.Id, Payload: job.Payload, State: StatePending}
+	jm.persistLocked()
 	jm.mu.Unlock()
 	jm.ch <- job
 }
@@ -243,6 +246,14 @@ func (jm *JobManager) setStateLocked(id int, s JobState) {
 	rec := jm.records[id]
 	rec.State = s
 	jm.records[id] = rec
+	jm.persistLocked()
+}
+
+// caller must hold jm.mu, so the snapshot is consistent
+func (jm *JobManager) persistLocked() {
+	if err := saveAtomic("jobs.json", jm.records); err != nil {
+		fmt.Println("save failed:", err)
+	}
 }
 
 func (jm *JobManager) Wait() {
