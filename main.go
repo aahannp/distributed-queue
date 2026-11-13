@@ -15,15 +15,19 @@ func main() {
 		fmt.Println("load failed:", err)
 		os.Exit(1)
 	}
+	jobs, err := openJSON[map[int]Job](data)
+	if err != nil {
+		fmt.Println("load failed:", err)
+		os.Exit(1)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	jm.Start(ctx, 5)
 	jm.mu.Lock()
-	jm.outStanding = len(jm.records)
+	jm.outStanding = len(jobs)
 	jm.mu.Unlock()
-	for _, jr := range jm.records {
-		tjob := Job{jr.ID, jr.Payload}
-		jm.SubmitJob(tjob)
+	for _, job := range jobs {
+		jm.SubmitJob(job)
 	}
 	<-jm.stopChannel
 	end := time.Now()
