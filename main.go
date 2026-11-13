@@ -10,12 +10,11 @@ import (
 
 func main() {
 	st := time.Now()
-	recs, err := load()
+	_, err := load()
 	if err != nil {
 		fmt.Println("load failed:", err)
 		os.Exit(1)
 	}
-	fmt.Println(len(recs))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	jobs := []Job{
@@ -25,14 +24,11 @@ func main() {
 		{4, "busy"},
 		{5, "hang"},
 	}
-
 	jm := NewJobManager(2)
-
 	jm.Start(ctx, 5)
 	jm.mu.Lock()
 	jm.outStanding = len(jobs)
 	jm.mu.Unlock()
-
 	for _, job := range jobs {
 		_, err := json.Marshal(job)
 		if err != nil {

@@ -27,51 +27,54 @@ func NewJobManager(size int) *JobManager {
 
 	}
 }
+
 func (jm *JobManager) Close() {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	jm.closed = true
 	close(jm.ch)
 }
+func worker(jm *JobManager, ctx context.Context, id int) {
+	defer jm.wg.Done()
+	for {
+		select {
+		case job, ok := <-jm.ch:
 
+			if !ok {
+				return
+			}
+			jobCtx, jobCancel := context.WithTimeout(ctx, MAX_TIME_PER_JOB)
+			res := execute(DoWork, job, jobCtx, id, jm)
+			jobCancel()
+			switch {
+			case res.Err == nil, errors.Is(res.Err, ErrInvalidJob),
+				errors.Is(res.Err, ErrJobPanic):
+				jm.finishLocked() // final
+
+			case errors.Is(res.Err, ErrServerBusy), errors.Is(res.Err,
+				context.DeadlineExceeded):
+				ok = jm.requeueJob(job, "server busy")
+				if !ok {
+					jm.finishLocked()
+				}
+
+			default:
+				jm.requeueJob(job, "failed")
+			}
+
+		case <-ctx.Done():
+			s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
+			fmt.Println(s)
+
+			return
+
+		}
+	}
+}
 func (jm *JobManager) Start(ctx context.Context, num int) {
 	for i := 0; i < num; i++ {
 		jm.wg.Add(1)
-		go func() {
-			defer jm.wg.Done()
-			for {
-				select {
-				case job, ok := <-jm.ch:
-
-					if !ok {
-						return
-					}
-					jobCtx, jobCancel := context.WithTimeout(ctx, MAX_TIME_PER_JOB)
-					res := execute(DoWork, job, jobCtx, i, jm)
-					jobCancel()
-					switch {
-					case res.Err == nil, errors.Is(res.Err, ErrInvalidJob), errors.Is(res.Err, ErrJobPanic):
-						jm.finishLocked() // final
-
-					case errors.Is(res.Err, ErrServerBusy), errors.Is(res.Err, context.DeadlineExceeded):
-						ok = jm.requeueJob(job, "server busy")
-						if !ok {
-							jm.finishLocked()
-						}
-
-					default:
-						jm.requeueJob(job, "failed")
-					}
-
-				case <-ctx.Done():
-					s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
-					fmt.Println(s)
-
-					return
-
-				}
-			}
-		}()
+		go worker(jm, ctx, i)
 	}
 
 }

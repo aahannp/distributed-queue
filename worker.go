@@ -6,8 +6,6 @@ import (
 	"time"
 )
 
-// this would run on the main goroutine ? and wil be called by some other goroutione? crazy?
-
 func execute[T isJob](fn func(T, context.Context, int) error, item T, ctx context.Context, workerId int, jm *JobManager) (res Result) {
 	set := func(s JobState) {
 		jm.mu.Lock()

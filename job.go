@@ -9,13 +9,11 @@ type Job struct {
 	Id      int    `json:"id"`
 	Payload string `json:"payload,omitempty"`
 }
-type JobState int
 type isJob interface {
 	GetId() int
 }
 
-func (j Job) GetId() int           { return j.Id }
-func (js JobState) String() string { return jobStatus[js] }
+func (j Job) GetId() int { return j.Id }
 func (r Result) String() string {
 	switch {
 	case r.Err == nil:
