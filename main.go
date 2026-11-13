@@ -20,13 +20,23 @@ func main() {
 		fmt.Println("load failed:", err)
 		os.Exit(1)
 	}
+	var todo []Job
+	for _, job := range jobs {
+		if jm.records[job.Id].State != StateCompleted {
+			todo = append(todo, job)
+		}
+	}
+	if len(todo) == 0 {
+		fmt.Println("nothing to do: all jobs already completed")
+		return
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	jm.Start(ctx, 5)
 	jm.mu.Lock()
-	jm.outStanding = len(jobs)
+	jm.outStanding = len(todo)
 	jm.mu.Unlock()
-	for _, job := range jobs {
+	for _, job := range todo {
 		jm.SubmitJob(job)
 	}
 	<-jm.stopChannel
