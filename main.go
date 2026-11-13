@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -30,14 +29,9 @@ func main() {
 	jm.outStanding = len(jobs)
 	jm.mu.Unlock()
 	for _, job := range jobs {
-		_, err := json.Marshal(job)
-		if err != nil {
-			fmt.Println("Error marshalling:", err)
-			return
-		}
 		jm.SubmitJob(job)
 	}
-	<-jm.stopChannel // give a cmd to stop the channel
+	<-jm.stopChannel
 	end := time.Now()
 	fmt.Println(end.Sub(st))
 	jm.Close() // closing the main goroutine - the sender - the channel is closed

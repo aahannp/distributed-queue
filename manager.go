@@ -39,7 +39,6 @@ func worker(jm *JobManager, ctx context.Context, id int) {
 	for {
 		select {
 		case job, ok := <-jm.ch:
-
 			if !ok {
 				return
 			}
@@ -61,16 +60,15 @@ func worker(jm *JobManager, ctx context.Context, id int) {
 			default:
 				jm.requeueJob(job, "failed")
 			}
-
 		case <-ctx.Done():
 			s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
 			fmt.Println(s)
-
 			return
 
 		}
 	}
 }
+
 func (jm *JobManager) Start(ctx context.Context, num int) {
 	for i := 0; i < num; i++ {
 		jm.wg.Add(1)
@@ -79,7 +77,6 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 
 }
 
-// record the job and put in the chan
 func (jm *JobManager) SubmitJob(job Job) {
 	jm.mu.Lock()
 	jm.records[job.Id] = JobRecord{ID: job.Id, Payload: job.Payload, State: StatePending}
@@ -99,6 +96,7 @@ func (jm *JobManager) setStateLocked(id int, s JobState) {
 func (jm *JobManager) Wait() {
 	jm.wg.Wait()
 }
+
 func (jm *JobManager) finishLocked() {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
