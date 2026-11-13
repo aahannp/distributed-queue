@@ -268,8 +268,30 @@ func (jm *JobManager) finishLocked() {
 		close(jm.stopChannel)
 	}
 }
+func load(path string) (map[int]JobRecord, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil // first run
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	var recs map[int]JobRecord
+	if err := json.NewDecoder(file).Decode(&recs); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return recs, nil
+}
+
 func main() {
 	st := time.Now()
+	recs, err := load("jobs.json")
+	if err != nil {
+		fmt.Println("load failed:", err)
+		os.Exit(1)
+	}
+	fmt.Println(len(recs))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	jobs := []Job{
