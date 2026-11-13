@@ -49,10 +49,11 @@ type JobManager struct {
 
 func NewJobManager(size int) *JobManager {
 	return &JobManager{
-		ch:          make(chan Job, size),
-		records:     make(map[int]JobRecord),
-		closed:      false,
-		stopChannel: make(chan struct{}),
+		ch:          make(chan Job, size),    // the way the main goroutine talks to the children
+		records:     make(map[int]JobRecord), // the map of the job record
+		closed:      false,                   // the status of the queue
+		stopChannel: make(chan struct{}),     // this is the channel -> the way the parent goroutine talks the children to stop
+
 	}
 }
 
@@ -135,17 +136,6 @@ func (jm *JobManager) requeueJobCore(job Job, reason string) bool {
 		return false
 	}
 
-}
-func saveAtomic(path string, recs map[int]JobRecord) error {
-	data, err := json.MarshalIndent(recs, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path) // either the old file or the new one, never half
 }
 
 func (jm *JobManager) Start(ctx context.Context, num int) {
@@ -249,13 +239,6 @@ func (jm *JobManager) setStateLocked(id int, s JobState) {
 	jm.persistLocked()
 }
 
-// caller must hold jm.mu, so the snapshot is consistent
-func (jm *JobManager) persistLocked() {
-	if err := saveAtomic("jobs.json", jm.records); err != nil {
-		fmt.Println("save failed:", err)
-	}
-}
-
 func (jm *JobManager) Wait() {
 	jm.wg.Wait()
 }
@@ -268,25 +251,10 @@ func (jm *JobManager) finishLocked() {
 		close(jm.stopChannel)
 	}
 }
-func load(path string) (map[int]JobRecord, error) {
-	file, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil // first run
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	var recs map[int]JobRecord
-	if err := json.NewDecoder(file).Decode(&recs); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return recs, nil
-}
 
 func main() {
 	st := time.Now()
-	recs, err := load("jobs.json")
+	recs, err := load()
 	if err != nil {
 		fmt.Println("load failed:", err)
 		os.Exit(1)
@@ -310,23 +278,21 @@ func main() {
 	jm.mu.Unlock()
 
 	for _, job := range jobs {
-		jsonData, err := json.Marshal(job)
+		_, err := json.Marshal(job)
 		if err != nil {
 			fmt.Println("Error marshalling:", err)
 			return
 		}
-
-		// json.Marshal returns a byte slice, so we cast it to a string to print it
-		fmt.Println(string(jsonData))
 		jm.SubmitJob(job)
 	}
-	<-jm.stopChannel
+	<-jm.stopChannel // give a cmd to stop the channel
 	end := time.Now()
 	fmt.Println(end.Sub(st))
-	jm.Close()
+	jm.Close() // closing the main goroutine - the sender - the channel is closed
 	jm.Wait()
 	for key, rec := range jm.records {
 		fmt.Printf("job %v returned %v after %d retries. \n", key, rec.State, rec.Attempts)
 	}
+	// havent updated the job states after thw whole implementation
 	fmt.Println("main is done everything is done thanks ")
 }
