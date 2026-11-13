@@ -25,21 +25,25 @@ func saveAtomic(path string, recs map[int]JobRecord) error {
 	return os.Rename(tmp, path) // either the old file or the new one, never half
 }
 
-func load() (map[int]JobRecord, error) {
+func load(jm *JobManager) error {
 	path := datapath
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil // first run
+		return nil // first run
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer file.Close()
 	var recs map[int]JobRecord
 	if err := json.NewDecoder(file).Decode(&recs); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return fmt.Errorf("parse %s: %w", path, err)
 	}
-	return recs, nil
+	for _, value := range recs {
+		jid := value.ID
+		jm.records[jid] = value
+	}
+	return nil
 }
 
 // caller must hold jm.mu, so the snapshot is consistent

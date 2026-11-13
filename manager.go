@@ -78,10 +78,6 @@ func (jm *JobManager) Start(ctx context.Context, num int) {
 }
 
 func (jm *JobManager) SubmitJob(job Job) {
-	jm.mu.Lock()
-	jm.records[job.Id] = JobRecord{ID: job.Id, Payload: job.Payload, State: StatePending}
-	jm.persistLocked()
-	jm.mu.Unlock()
 	jm.ch <- job
 }
 
