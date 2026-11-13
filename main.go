@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+func isFinal(s JobState) bool { return s == StateCompleted || s == StateError }
 func main() {
 	st := time.Now()
 	jm := NewJobManager(2)
@@ -22,9 +23,10 @@ func main() {
 	}
 	var todo []Job
 	for _, job := range jobs {
-		if jm.records[job.Id].State != StateCompleted {
-			todo = append(todo, job)
+		if rec, ok := jm.records[job.Id]; ok && isFinal(rec.State) {
+			continue
 		}
+		todo = append(todo, job)
 	}
 	if len(todo) == 0 {
 		fmt.Println("nothing to do: all jobs already completed")

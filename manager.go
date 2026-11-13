@@ -46,19 +46,15 @@ func worker(jm *JobManager, ctx context.Context, id int) {
 			res := execute(DoWork, job, jobCtx, id, jm)
 			jobCancel()
 			switch {
-			case res.Err == nil, errors.Is(res.Err, ErrInvalidJob),
-				errors.Is(res.Err, ErrJobPanic):
-				jm.finishLocked() // final
-
-			case errors.Is(res.Err, ErrServerBusy), errors.Is(res.Err,
-				context.DeadlineExceeded):
-				ok = jm.requeueJob(job, "server busy")
-				if !ok {
-					jm.finishLocked()
-				}
-
+			case res.Err == nil:
+				jm.finishWith(job.Id, StateCompleted)
+			case errors.Is(res.Err, ErrInvalidJob), errors.Is(res.Err, ErrJobPanic):
+				jm.finishWith(job.Id, StateError)
 			default:
-				jm.requeueJob(job, "failed")
+				jm.mu.Lock()
+				jm.setStateLocked(job.Id, StateRetrying)
+				jm.mu.Unlock()
+				jm.requeueJob(job, res.Err.Error())
 			}
 		case <-ctx.Done():
 			s := fmt.Sprintf("worker cancelled exiting :  %v", ctx.Err())
@@ -107,6 +103,16 @@ func (jm *JobManager) finishLocked() {
 	defer jm.mu.Unlock()
 	jm.outStanding--
 	// when all the workers are done
+	if jm.outStanding == 0 {
+		close(jm.stopChannel)
+	}
+}
+
+func (jm *JobManager) finishWith(id int, s JobState) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	jm.setStateLocked(id, s)
+	jm.outStanding--
 	if jm.outStanding == 0 {
 		close(jm.stopChannel)
 	}

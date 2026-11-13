@@ -7,26 +7,17 @@ import (
 )
 
 func execute[T isJob](fn func(T, context.Context, int) error, item T, ctx context.Context, workerId int, jm *JobManager) (res Result) {
-	set := func(s JobState) {
-		jm.mu.Lock()
-		jm.setStateLocked(item.GetId(), s)
-		jm.mu.Unlock()
-	}
 	defer func() {
 		if r := recover(); r != nil {
-			set(StateError)
 			res = Result{ErrJobPanic, item.GetId()}
 		}
 	}()
-	set(StateInProgress)
+	jm.mu.Lock()
+	jm.setStateLocked(item.GetId(), StateInProgress)
+	jm.mu.Unlock()
+
 	err := fn(item, ctx, workerId)
-	if err != nil {
-		set(StateError)
-		// add retry mech here and also the retry state
-	} else {
-		set(StateCompleted)
-	}
-	return Result{err, item.GetId()}
+	return Result{err, item.GetId()} // the worker decides what this means
 }
 
 func DoWork(job Job, ctx context.Context, workerId int) error {
